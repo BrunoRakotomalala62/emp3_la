@@ -52,6 +52,7 @@ def search_music(query, max_results=10):
                     video_id = entry.get('id', '')
                     title = entry.get('title', 'Unknown')
                     duration = entry.get('duration', 0)
+                    thumbnail = entry.get('thumbnail', '')
                     
                     audio_url = None
                     video_url = None
@@ -84,6 +85,7 @@ def search_music(query, max_results=10):
                         'titre': title,
                         'duree': format_duration(duration),
                         'duree_secondes': duration,
+                        'image_url': thumbnail,
                         'taille_mp3': format_size(audio_size) if audio_size else "~3-5 MB",
                         'taille_mp4': format_size(video_size) if video_size else "~10-50 MB",
                         'url_mp3': audio_url,
