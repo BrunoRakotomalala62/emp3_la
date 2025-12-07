@@ -1,0 +1,269 @@
+from flask import Flask, request, jsonify, Response, send_file
+import json
+import yt_dlp
+import os
+import tempfile
+import threading
+import time
+
+app = Flask(__name__)
+
+DOWNLOADS_DIR = "/tmp/downloads"
+os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+
+def format_duration(seconds):
+    """Convert seconds to MM:SS format"""
+    if not seconds:
+        return "N/A"
+    minutes = int(seconds // 60)
+    secs = int(seconds % 60)
+    return f"{minutes}:{secs:02d}"
+
+def format_size(bytes_size):
+    """Convert bytes to MB format"""
+    if not bytes_size:
+        return "N/A"
+    mb = bytes_size / (1024 * 1024)
+    return f"{mb:.2f} MB"
+
+def search_music(query, max_results=10):
+    """Search for music using yt-dlp"""
+    results = []
+    
+    ydl_opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'extract_flat': False,
+        'default_search': 'ytsearch',
+        'noplaylist': True,
+        'format': 'bestaudio/best',
+    }
+    
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            search_query = f"ytsearch{max_results}:{query}"
+            info = ydl.extract_info(search_query, download=False)
+            
+            if 'entries' in info:
+                for entry in info['entries']:
+                    if entry is None:
+                        continue
+                    
+                    video_id = entry.get('id', '')
+                    title = entry.get('title', 'Unknown')
+                    duration = entry.get('duration', 0)
+                    
+                    audio_url = None
+                    video_url = None
+                    audio_size = None
+                    video_size = None
+                    
+                    formats = entry.get('formats', [])
+                    
+                    for fmt in formats:
+                        if fmt.get('acodec') != 'none' and fmt.get('vcodec') == 'none':
+                            if audio_url is None:
+                                audio_url = fmt.get('url')
+                                audio_size = fmt.get('filesize') or fmt.get('filesize_approx')
+                    
+                    for fmt in formats:
+                        if fmt.get('vcodec') != 'none' and fmt.get('acodec') != 'none':
+                            if fmt.get('ext') == 'mp4':
+                                video_url = fmt.get('url')
+                                video_size = fmt.get('filesize') or fmt.get('filesize_approx')
+                                break
+                    
+                    if not video_url:
+                        for fmt in formats:
+                            if fmt.get('ext') == 'mp4':
+                                video_url = fmt.get('url')
+                                video_size = fmt.get('filesize') or fmt.get('filesize_approx')
+                                break
+                    
+                    results.append({
+                        'titre': title,
+                        'duree': format_duration(duration),
+                        'duree_secondes': duration,
+                        'taille_mp3': format_size(audio_size) if audio_size else "~3-5 MB",
+                        'taille_mp4': format_size(video_size) if video_size else "~10-50 MB",
+                        'url_mp3': audio_url,
+                        'url_mp4': video_url,
+                        'video_id': video_id,
+                        'youtube_url': f"https://www.youtube.com/watch?v={video_id}",
+                        'telecharger_mp3': f"/telecharger/mp3/{video_id}",
+                        'telecharger_mp4': f"/telecharger/mp4/{video_id}"
+                    })
+                    
+    except Exception as e:
+        return {'error': str(e)}
+    
+    return results
+
+
+@app.route('/')
+def home():
+    response_data = {
+        'message': 'API MP3 Juice - Recherche et téléchargement de musique',
+        'routes': {
+            'recherche': '/recherche?audio=<votre_recherche>',
+            'telecharger_mp3': '/telecharger/mp3/<video_id>',
+            'telecharger_mp4': '/telecharger/mp4/<video_id>'
+        },
+        'exemple': '/recherche?audio=odyai'
+    }
+    return Response(
+        json.dumps(response_data, ensure_ascii=False, indent=2),
+        mimetype='application/json; charset=utf-8'
+    )
+
+
+@app.route('/recherche', methods=['GET'])
+def recherche():
+    audio = request.args.get('audio', '')
+    limit = request.args.get('limit', '10')
+    
+    try:
+        limit = int(limit)
+        limit = min(max(1, limit), 20)
+    except:
+        limit = 10
+    
+    if not audio:
+        return jsonify({
+            'error': 'Paramètre "audio" requis',
+            'usage': '/recherche?audio=<votre_recherche>&limit=10'
+        }), 400
+    
+    results = search_music(audio, max_results=limit)
+    
+    if isinstance(results, dict) and 'error' in results:
+        response_data = {
+            'recherche': audio,
+            'error': results['error'],
+            'resultats': []
+        }
+    else:
+        response_data = {
+            'recherche': audio,
+            'nombre_resultats': len(results),
+            'resultats': results
+        }
+    
+    response = Response(
+        json.dumps(response_data, ensure_ascii=False, indent=2),
+        mimetype='application/json; charset=utf-8'
+    )
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    return response
+
+
+@app.route('/telecharger/mp3/<video_id>', methods=['GET'])
+def telecharger_mp3(video_id):
+    """Download audio as MP3"""
+    try:
+        output_path = os.path.join(DOWNLOADS_DIR, f"{video_id}.mp3")
+        
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': os.path.join(DOWNLOADS_DIR, f"{video_id}.%(ext)s"),
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+            'quiet': True,
+        }
+        
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            title = info.get('title', video_id)
+        
+        if os.path.exists(output_path):
+            return send_file(
+                output_path,
+                as_attachment=True,
+                download_name=f"{title}.mp3",
+                mimetype='audio/mpeg'
+            )
+        else:
+            for ext in ['m4a', 'webm', 'opus']:
+                alt_path = os.path.join(DOWNLOADS_DIR, f"{video_id}.{ext}")
+                if os.path.exists(alt_path):
+                    return send_file(
+                        alt_path,
+                        as_attachment=True,
+                        download_name=f"{title}.{ext}",
+                        mimetype='audio/mpeg'
+                    )
+        
+        return jsonify({'error': 'Fichier non trouvé après téléchargement'}), 500
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/telecharger/mp4/<video_id>', methods=['GET'])
+def telecharger_mp4(video_id):
+    """Download video as MP4"""
+    try:
+        output_path = os.path.join(DOWNLOADS_DIR, f"{video_id}.mp4")
+        
+        ydl_opts = {
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            'outtmpl': output_path,
+            'merge_output_format': 'mp4',
+            'quiet': True,
+        }
+        
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            title = info.get('title', video_id)
+        
+        if os.path.exists(output_path):
+            return send_file(
+                output_path,
+                as_attachment=True,
+                download_name=f"{title}.mp4",
+                mimetype='video/mp4'
+            )
+        
+        return jsonify({'error': 'Fichier non trouvé après téléchargement'}), 500
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/stream/mp3/<video_id>', methods=['GET'])
+def stream_mp3(video_id):
+    """Get direct streaming URL for MP3"""
+    try:
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'quiet': True,
+        }
+        
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            audio_url = info.get('url')
+            
+            if audio_url:
+                return jsonify({
+                    'titre': info.get('title'),
+                    'stream_url': audio_url,
+                    'duree': format_duration(info.get('duration')),
+                })
+        
+        return jsonify({'error': 'URL non trouvée'}), 404
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
