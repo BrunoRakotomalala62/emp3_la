@@ -8,3 +8,7 @@ flask
 gunicorn
 requests
 yt-dlp
+beautifulsoup4
+flask
+gunicorn
+requests
