@@ -67,19 +67,21 @@ def search_music(query, max_results=10):
                                 audio_url = fmt.get('url')
                                 audio_size = fmt.get('filesize') or fmt.get('filesize_approx')
                     
+                    mp4_formats = []
                     for fmt in formats:
-                        if fmt.get('vcodec') != 'none' and fmt.get('acodec') != 'none':
-                            if fmt.get('ext') == 'mp4':
-                                video_url = fmt.get('url')
-                                video_size = fmt.get('filesize') or fmt.get('filesize_approx')
-                                break
+                        if fmt.get('ext') == 'mp4' and fmt.get('vcodec') != 'none':
+                            height = fmt.get('height') or 0
+                            mp4_formats.append({
+                                'url': fmt.get('url'),
+                                'size': fmt.get('filesize') or fmt.get('filesize_approx'),
+                                'height': height
+                            })
                     
-                    if not video_url:
-                        for fmt in formats:
-                            if fmt.get('ext') == 'mp4':
-                                video_url = fmt.get('url')
-                                video_size = fmt.get('filesize') or fmt.get('filesize_approx')
-                                break
+                    if mp4_formats:
+                        mp4_formats.sort(key=lambda x: x['height'])
+                        lowest = mp4_formats[0]
+                        video_url = lowest['url']
+                        video_size = lowest['size']
                     
                     results.append({
                         'titre': title,
@@ -208,12 +210,12 @@ def telecharger_mp3(video_id):
 
 @app.route('/telecharger/mp4/<video_id>', methods=['GET'])
 def telecharger_mp4(video_id):
-    """Download video as MP4"""
+    """Download video as MP4 in lowest quality (360p or less)"""
     try:
         output_path = os.path.join(DOWNLOADS_DIR, f"{video_id}.mp4")
         
         ydl_opts = {
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            'format': 'worstvideo[ext=mp4][height<=360]+worstaudio[ext=m4a]/worst[ext=mp4][height<=360]/worstvideo[ext=mp4]+worstaudio[ext=m4a]/worst[ext=mp4]/worst',
             'outtmpl': output_path,
             'merge_output_format': 'mp4',
             'quiet': True,
