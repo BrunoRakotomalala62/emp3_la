@@ -5,11 +5,16 @@ import os
 import tempfile
 import threading
 import time
+from functools import lru_cache
 
 app = Flask(__name__)
 
 DOWNLOADS_DIR = "/tmp/downloads"
 os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+
+# Cache pour les résultats de recherche (expire après 5 minutes)
+search_cache = {}
+CACHE_DURATION = 300  # 5 minutes
 
 def format_duration(seconds):
     """Convert seconds to MM:SS format"""
@@ -26,17 +31,40 @@ def format_size(bytes_size):
     mb = bytes_size / (1024 * 1024)
     return f"{mb:.2f} MB"
 
+def get_cached_results(query, max_results):
+    """Check if we have cached results for this query"""
+    cache_key = f"{query}:{max_results}"
+    if cache_key in search_cache:
+        cached_time, results = search_cache[cache_key]
+        if time.time() - cached_time < CACHE_DURATION:
+            return results
+        else:
+            del search_cache[cache_key]
+    return None
+
+def set_cached_results(query, max_results, results):
+    """Cache search results"""
+    cache_key = f"{query}:{max_results}"
+    search_cache[cache_key] = (time.time(), results)
+
 def search_music(query, max_results=10):
-    """Search for music using yt-dlp"""
+    """Search for music using yt-dlp - OPTIMIZED VERSION"""
+    
+    # Check cache first
+    cached = get_cached_results(query, max_results)
+    if cached is not None:
+        return cached
+    
     results = []
     
+    # Use extract_flat=True for FAST search (no metadata fetching per video)
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
-        'extract_flat': False,
+        'extract_flat': True,  # IMPORTANT: Fast mode - only basic info
         'default_search': 'ytsearch',
         'noplaylist': True,
-        'format': 'bestaudio/best',
+        'skip_download': True,
     }
     
     try:
@@ -52,51 +80,34 @@ def search_music(query, max_results=10):
                     video_id = entry.get('id', '')
                     title = entry.get('title', 'Unknown')
                     duration = entry.get('duration', 0)
+                    
+                    # Get best available thumbnail
                     thumbnail = entry.get('thumbnail', '')
+                    if not thumbnail:
+                        thumbnails = entry.get('thumbnails', [])
+                        if thumbnails:
+                            thumbnail = thumbnails[-1].get('url', '')
                     
-                    audio_url = None
-                    video_url = None
-                    audio_size = None
-                    video_size = None
-                    
-                    formats = entry.get('formats', [])
-                    
-                    for fmt in formats:
-                        if fmt.get('acodec') != 'none' and fmt.get('vcodec') == 'none':
-                            if audio_url is None:
-                                audio_url = fmt.get('url')
-                                audio_size = fmt.get('filesize') or fmt.get('filesize_approx')
-                    
-                    mp4_formats = []
-                    for fmt in formats:
-                        if fmt.get('ext') == 'mp4' and fmt.get('vcodec') != 'none':
-                            height = fmt.get('height') or 0
-                            mp4_formats.append({
-                                'url': fmt.get('url'),
-                                'size': fmt.get('filesize') or fmt.get('filesize_approx'),
-                                'height': height
-                            })
-                    
-                    if mp4_formats:
-                        mp4_formats.sort(key=lambda x: x['height'])
-                        lowest = mp4_formats[0]
-                        video_url = lowest['url']
-                        video_size = lowest['size']
+                    # If no thumbnail from API, use YouTube default
+                    if not thumbnail and video_id:
+                        thumbnail = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
                     
                     results.append({
                         'titre': title,
                         'duree': format_duration(duration),
                         'duree_secondes': duration,
                         'image_url': thumbnail,
-                        'taille_mp3': format_size(audio_size) if audio_size else "~3-5 MB",
-                        'taille_mp4': format_size(video_size) if video_size else "~10-50 MB",
-                        'url_mp3': audio_url,
-                        'url_mp4': video_url,
+                        'taille_mp3': "~3-5 MB",  # Estimate - actual size fetched on download
+                        'taille_mp4': "~10-50 MB",  # Estimate
                         'video_id': video_id,
                         'youtube_url': f"https://www.youtube.com/watch?v={video_id}",
                         'telecharger_mp3': f"/telecharger/mp3/{video_id}",
-                        'telecharger_mp4': f"/telecharger/mp4/{video_id}"
+                        'telecharger_mp4': f"/telecharger/mp4/{video_id}",
+                        'stream_mp3': f"/stream/mp3/{video_id}"
                     })
+        
+        # Cache the results
+        set_cached_results(query, max_results, results)
                     
     except Exception as e:
         return {'error': str(e)}
@@ -111,7 +122,8 @@ def home():
         'routes': {
             'recherche': '/recherche?audio=<votre_recherche>',
             'telecharger_mp3': '/telecharger/mp3/<video_id>',
-            'telecharger_mp4': '/telecharger/mp4/<video_id>'
+            'telecharger_mp4': '/telecharger/mp4/<video_id>',
+            'stream_mp3': '/stream/mp3/<video_id>'
         },
         'exemple': '/recherche?audio=odyai'
     }
